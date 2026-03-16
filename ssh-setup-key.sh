@@ -10,7 +10,6 @@ set -euo pipefail
 
 USER_HOST="${1:-}"
 SSH_PORT="${2:-22}"
-KEY_FILE="$HOME/.ssh/id_ed25519"
 
 if [ -z "$USER_HOST" ]; then
     echo "Usage: $0 <user@host> [ssh_port]"
@@ -18,6 +17,14 @@ if [ -z "$USER_HOST" ]; then
     echo "Example: $0 admin@192.168.1.100 2222"
     exit 1
 fi
+
+# Extract user and host
+SSH_USER="${USER_HOST%%@*}"
+SSH_HOST="${USER_HOST##*@}"
+
+# Use a dedicated key file per host (does not affect other connections)
+KEY_FILE="$HOME/.ssh/id_ed25519_${SSH_HOST}"
+SSH_CONFIG="$HOME/.ssh/config"
 
 # Check if sshpass is installed
 if ! command -v sshpass &>/dev/null; then
@@ -56,16 +63,36 @@ sshpass -p "$SSH_PASS" ssh-copy-id \
     -o StrictHostKeyChecking=accept-new \
     "$USER_HOST"
 
-# Step 4: Verify key-based authentication works
-echo "[4/4] Verifying key-based authentication..."
+# Step 4: Configure ~/.ssh/config so only this host uses this key
+echo "[4/5] Configuring SSH config for $SSH_HOST..."
+mkdir -p "$HOME/.ssh"
+
+if grep -q "^Host $SSH_HOST" "$SSH_CONFIG" 2>/dev/null; then
+    echo "       Entry for $SSH_HOST already exists in $SSH_CONFIG, skipping."
+else
+    cat >> "$SSH_CONFIG" <<EOC
+
+# Auto-generated for $SSH_HOST
+Host $SSH_HOST
+    HostName $SSH_HOST
+    User $SSH_USER
+    Port $SSH_PORT
+    IdentityFile $KEY_FILE
+    IdentitiesOnly yes
+EOC
+    chmod 600 "$SSH_CONFIG"
+    echo "       Added entry to $SSH_CONFIG"
+fi
+
+# Step 5: Verify key-based authentication works
+echo "[5/5] Verifying key-based authentication..."
 if ssh -i "$KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes "$USER_HOST" "echo 'OK'" &>/dev/null; then
     echo ""
-    echo "Success! Key-based authentication is configured."
+    echo "Success! Key-based authentication is configured for $SSH_HOST only."
     echo "You can now connect without a password:"
-    echo "  ssh $USER_HOST"
+    echo "  ssh $SSH_HOST"
     echo ""
-    echo "To disable password authentication on the server (recommended):"
-    echo "  ssh $USER_HOST \"sudo sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl restart sshd\""
+    echo "Other SSH connections are not affected."
 else
     echo ""
     echo "Warning: Key was copied but verification failed."
